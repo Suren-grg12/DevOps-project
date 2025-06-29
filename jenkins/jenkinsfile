@@ -1,94 +1,133 @@
 pipeline {
     agent any
-
+    
     environment {
-        // App Config
-        APP_NAME = "AQI"
-        NODE_VERSION = "22.15.1"
-        
-        // SonarQube Config
-        SONARQUBE_SCANNER_HOME = tool 'SonarScanner'
-        SONARQUBE_SERVER = "SonarQube"
-        SONAR_HOST_URL = "http://192.168.33.11:9000"
-        
-        // GitHub Config (Change to SSH if using Option 2)
+        // GitHub Configuration (MUST match your Jenkins credentials ID)
         REPO_URL = 'https://github.com/Suren-grg12/air-quality-app.git'
-        CREDENTIALS_ID = 'github-pat' // or 'github-ssh' for SSH
+        CREDENTIALS_ID = 'github-credentials' // Exact credential ID from Jenkins
+        
+        // Build Configuration
+        NODE_VERSION = '22.15.1'
+        APP_NAME = 'air-quality-app'
+        
+        // SonarQube Configuration
+        SONARQUBE_SERVER = 'SonarQube' // Jenkins-configured SonarQube server name
+        SONAR_SCANNER = tool 'SonarScanner' // Tool name in Jenkins
+        SONAR_HOST_URL = 'http://192.168.33.11:9000' // Your SonarQube URL
     }
 
     tools {
-        nodejs "${NODE_VERSION}"
+        nodejs "${NODE_VERSION}" // Auto-installs Node.js if not present
     }
 
     stages {
+        // STAGE 1: SECURE CHECKOUT WITH AUTHENTICATION
         stage('Checkout') {
             steps {
-                git(
-                    url: env.REPO_URL,
-                    credentialsId: env.CREDENTIALS_ID,
-                    branch: 'main'
-                )
-            }
-        }
-
-        stage('Install Dependencies') {
-            steps {
-                sh 'npm ci --ignore-scripts'
-            }
-        }
-
-        stage('Test') {
-            steps {
-                sh 'npm test'
-            }
-            post {
-                always {
-                    junit '**/test-results.xml'
-                    archiveArtifacts 'coverage/**/*'
+                script {
+                    try {
+                        checkout([
+                            $class: 'GitSCM',
+                            branches: [[name: '*/main']],
+                            extensions: [],
+                            userRemoteConfigs: [[
+                                url: env.REPO_URL,
+                                credentialsId: env.CREDENTIALS_ID
+                            ]]
+                        ])
+                        echo "✔ Successfully checked out ${env.REPO_URL}"
+                    } catch (err) {
+                        echo "❌ Checkout failed: ${err}"
+                        // Debugging commands
+                        sh 'git --version'
+                        sh 'printenv | sort'
+                        error("Checkout failed - verify credentials and repository access")
+                    }
                 }
             }
         }
 
-        stage('SonarQube Analysis') {
+        // STAGE 2: DEPENDENCY INSTALLATION
+        stage('Install') {
             steps {
-                withSonarQubeEnv("${SONARQUBE_SERVER}") {
+                sh 'npm ci --ignore-scripts' // Secure install avoiding post-install risks
+            }
+        }
+
+        // STAGE 3: CODE QUALITY CHECKS
+        stage('Lint & Test') {
+            steps {
+                sh 'npm run lint || true' // Non-blocking linting
+                sh 'npm test -- --coverage --reporters=default --reporters=jest-junit'
+            }
+            post {
+                always {
+                    junit '**/junit.xml' // Test reports
+                    archiveArtifacts 'coverage/**/*' // Coverage reports
+                }
+            }
+        }
+
+        // STAGE 4: SONARQUBE ANALYSIS
+        stage('SonarQube Scan') {
+            steps {
+                withSonarQubeEnv(env.SONARQUBE_SERVER) {
                     sh """
-                    ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
-                        -Dsonar.host.url=${SONAR_HOST_URL} \
-                        -Dsonar.projectKey=${APP_NAME} \
-                        -Dsonar.projectName=${APP_NAME} \
+                    ${env.SONAR_SCANNER}/bin/sonar-scanner \
+                        -Dsonar.host.url=${env.SONAR_HOST_URL} \
+                        -Dsonar.projectKey=${env.APP_NAME} \
+                        -Dsonar.projectName=${env.APP_NAME} \
                         -Dsonar.projectVersion=1.0 \
                         -Dsonar.sources=. \
                         -Dsonar.inclusions=**/*.js \
                         -Dsonar.exclusions=node_modules/**,public/**,views/** \
-                        -Dsonar.javascript.node.executable=${env.NODEJS_HOME}/bin/node
+                        -Dsonar.javascript.node.executable=${env.NODEJS_HOME}/bin/node \
+                        -Dsonar.login=${SONAR_AUTH_TOKEN} # From Jenkins credentials
                     """
                 }
             }
         }
 
+        // STAGE 5: QUALITY GATE ENFORCEMENT
         stage('Quality Gate') {
             steps {
                 timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
+                    waitForQualityGate abortPipeline: true // FAIL if quality checks fail
                 }
             }
         }
 
+        // STAGE 6: BUILD ARTIFACTS
         stage('Build') {
             steps {
                 sh 'npm run build'
-                archiveArtifacts artifacts: 'public/**/*,bin/**/*', excludes: '**/*.map'
+                archiveArtifacts artifacts: 'public/**,bin/**', excludes: '**/*.map'
             }
         }
     }
 
     post {
+        always {
+            cleanWs() // Clean workspace after build
+            script {
+                currentBuild.description = "v${env.BUILD_NUMBER} (${env.GIT_BRANCH})"
+            }
+        }
         success {
-            echo "✅ Pipeline succeeded!"
+            emailext (
+                subject: "✅ SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                body: """<p>Build passed all quality checks!</p>
+                         <p>SonarQube Report: ${env.SONAR_HOST_URL}/dashboard?id=${env.APP_NAME}</p>""",
+                to: 'dev-team@example.com'
+            )
         }
         failure {
-            echo "❌ Pipeline failed. Check logs."
+            emailext (
+                subject: "❌ FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                body: """<p>Build failed! Check logs:</p>
+                         <p><a href="${env.BUILD_URL}console">${env.BUILD_URL}console</a></p>""",
+                to: 'dev-team@example.com'
+            )
         }
     }
 }
