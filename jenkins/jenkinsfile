@@ -2,51 +2,54 @@ pipeline {
     agent any
 
     environment {
-        // Application Config
+        // App Config
         APP_NAME = "AQI"
-        NODE_VERSION = "22.15.1"  // Your Node.js version
+        NODE_VERSION = "22.15.1"
         
-        // SonarQube Config (from your properties)
-        SONARQUBE_SCANNER_HOME = tool 'SonarScanner'  // Must match Jenkins tool name
-        SONARQUBE_SERVER = "SonarQube"  // Jenkins-configured SonarQube server
-        SONAR_HOST_URL = "http://192.168.33.11:9000"  // Your SonarQube server
-        PROJECT_BASE_DIR = "${WORKSPACE}"  // Jenkins workspace path
+        // SonarQube Config
+        SONARQUBE_SCANNER_HOME = tool 'SonarScanner'
+        SONARQUBE_SERVER = "SonarQube"
+        SONAR_HOST_URL = "http://192.168.33.11:9000"
+        
+        // GitHub Config (Change to SSH if using Option 2)
+        REPO_URL = 'https://github.com/Suren-grg12/air-quality-app.git'
+        CREDENTIALS_ID = 'github-pat' // or 'github-ssh' for SSH
     }
 
     tools {
-        nodejs "${NODE_VERSION}"  // Node.js installation in Jenkins
+        nodejs "${NODE_VERSION}"
     }
 
     stages {
-        // Stage 1: Checkout Code
         stage('Checkout') {
             steps {
-                checkout scm
+                git(
+                    url: env.REPO_URL,
+                    credentialsId: env.CREDENTIALS_ID,
+                    branch: 'main'
+                )
             }
         }
 
-        // Stage 2: Install Dependencies
         stage('Install Dependencies') {
             steps {
-                sh 'npm ci --ignore-scripts'  // Skip post-install scripts for security
+                sh 'npm ci --ignore-scripts'
             }
         }
 
-        // Stage 3: Run Tests & Coverage
         stage('Test') {
             steps {
                 sh 'npm test'
             }
             post {
                 always {
-                    junit '**/test-results.xml'  // Publish test results
-                    archiveArtifacts 'coverage/**/*'  // Archive coverage reports
+                    junit '**/test-results.xml'
+                    archiveArtifacts 'coverage/**/*'
                 }
             }
         }
 
-        // Stage 4: SonarQube Analysis (Customized for your properties)
-        stage('SonarQube Scan') {
+        stage('SonarQube Analysis') {
             steps {
                 withSonarQubeEnv("${SONARQUBE_SERVER}") {
                     sh """
@@ -55,42 +58,37 @@ pipeline {
                         -Dsonar.projectKey=${APP_NAME} \
                         -Dsonar.projectName=${APP_NAME} \
                         -Dsonar.projectVersion=1.0 \
-                        -Dsonar.sourceEncoding=UTF-8 \
-                        -Dsonar.language=js \
                         -Dsonar.sources=. \
                         -Dsonar.inclusions=**/*.js \
                         -Dsonar.exclusions=node_modules/**,public/**,views/** \
-                        -Dsonar.projectBaseDir=${PROJECT_BASE_DIR} \
                         -Dsonar.javascript.node.executable=${env.NODEJS_HOME}/bin/node
                     """
                 }
             }
         }
 
-        // Stage 5: Quality Gate (Block if SonarQube fails)
         stage('Quality Gate') {
             steps {
                 timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true  // Fail build on Quality Gate failure
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
 
-        // Stage 6: Build (Exclude unnecessary files)
         stage('Build') {
             steps {
                 sh 'npm run build'
-                archiveArtifacts artifacts: 'public/**/*,bin/**/*', excludes: '**/*.map,node_modules/**'
+                archiveArtifacts artifacts: 'public/**/*,bin/**/*', excludes: '**/*.map'
             }
         }
     }
 
     post {
         success {
-            echo "✅ Pipeline succeeded! SonarQube Quality Gate passed."
+            echo "✅ Pipeline succeeded!"
         }
         failure {
-            echo "❌ Pipeline failed. Check SonarQube dashboard or test reports."
+            echo "❌ Pipeline failed. Check logs."
         }
     }
 }
