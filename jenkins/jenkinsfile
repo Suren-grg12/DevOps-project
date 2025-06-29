@@ -1,0 +1,143 @@
+pipeline {
+    agent any
+    
+    environment {
+        APP_NAME = 'air-quality-app'
+        NODE_VERSION = '22.15.1' // Matches your Node.js version
+        CI = 'true'
+    }
+    
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '5'))
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                sh 'git --version'
+                echo "Checked out ${env.GIT_COMMIT} from ${env.GIT_URL}"
+            }
+        }
+        
+        stage('Setup Node.js') {
+            steps {
+                nodejs(nodeJSInstallationName: "nodejs-${env.NODE_VERSION}") {
+                    sh 'node --version'
+                    sh 'npm --version'
+                }
+            }
+        }
+        
+        stage('Install Dependencies') {
+            steps {
+                sh 'npm ci' // Clean install for CI environments
+            }
+        }
+        
+        stage('Lint Code') {
+            steps {
+                script {
+                    try {
+                        sh 'npm run lint' // Assuming you have a lint script
+                    } catch (err) {
+                        echo "Linting issues found (not failing build): ${err}"
+                        // Continue despite linting issues
+                    }
+                }
+            }
+        }
+        
+        stage('Run Tests') {
+            steps {
+                sh 'npm test' // Run your test suite
+            }
+            post {
+                always {
+                    junit '**/test-results.xml' // Adjust path to your test results
+                    archiveArtifacts artifacts: 'coverage/**/*' // If you have test coverage
+                }
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                sh 'npm run build' // If you have a build step
+                archiveArtifacts artifacts: 'public/**/*, bin/**/*', fingerprint: true
+            }
+        }
+        
+        stage('Security Scan') {
+            steps {
+                sh 'npm audit' // Basic npm vulnerability check
+                // Consider adding: OWASP ZAP, Snyk, or other security scanners
+            }
+        }
+        
+        stage('Deploy to Staging') {
+            when {
+                branch 'develop' // Change to your staging branch name
+            }
+            steps {
+                script {
+                    echo "Deploying to staging environment..."
+                    // Example: sh 'ssh user@staging-server "cd /path/to/app && git pull && npm ci"'
+                }
+            }
+        }
+        
+        stage('Approval') {
+            when {
+                branch 'main'
+            }
+            steps {
+                timeout(time: 1, unit: 'HOURS') {
+                    input message: 'Deploy to production?', ok: 'Confirm'
+                }
+            }
+        }
+        
+        stage('Deploy to Production') {
+            when {
+                branch 'main'
+                beforeInput true
+            }
+            steps {
+                script {
+                    echo "Deploying version ${env.BUILD_NUMBER} to production"
+                    // Example deployment commands:
+                    // - sh 'rsync -avz ./ user@prod-server:/var/www/air-quality-app'
+                    // - sh 'kubectl apply -f k8s-deployment.yaml'
+                    // - sh 'npm run deploy-prod'
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            cleanWs()
+            script {
+                currentBuild.description = "v${env.BUILD_NUMBER} (${env.GIT_BRANCH})"
+            }
+        }
+        success {
+            emailext (
+                subject: "SUCCESS: ${env.JOB_NAME} - Build #${env.BUILD_NUMBER}",
+                body: """<p>Build successful!</p>
+                        <p>Check console output at <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>""",
+                to: 'dev-team@example.com'
+            )
+        }
+        failure {
+            emailext (
+                subject: "FAILED: ${env.JOB_NAME} - Build #${env.BUILD_NUMBER}",
+                body: """<p>Build failed!</p>
+                        <p>Check console output at <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>""",
+                to: 'dev-team@example.com'
+            )
+        }
+    }
+}
