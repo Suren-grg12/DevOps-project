@@ -20,38 +20,33 @@ pipeline {
         nodejs "${NODE_VERSION}"
     }
 
-    stages {
-        // STAGE 1: SECURE CHECKOUT (100% working authentication)
-        stage('Checkout') {
-            steps {
-                script {
-                    try {
-                        checkout([
-                            $class: 'GitSCM',
-                            branches: [[name: '*/main']],
-                            extensions: [[
-                                $class: 'CleanBeforeCheckout'
-                            ]],
-                            userRemoteConfigs: [[
-                                url: env.REPO_URL,
-                                credentialsId: env.CREDENTIALS_ID,
-                                refspec: '+refs/heads/*:refs/remotes/origin/*'
-                            ]]
-                        ])
-                        sh 'git config --global http.sslVerify true' // Fix SSL issues
-                        echo "✅ Checkout successful - Commit: ${sh(returnStdout: true, script: 'git rev-parse HEAD').trim()}"
-                    } catch (err) {
-                        echo "❌ Checkout failed: ${err}"
-                        sh '''
-                            echo "--- DEBUG INFO ---"
-                            git --version
-                            env | grep -E 'GIT|JENKINS|SONAR'
-                        '''
-                        error("Checkout failed - verify:\n1. Credential ID '${env.CREDENTIALS_ID}' exists\n2. PAT has 'repo' scope\n3. Repository exists at ${env.REPO_URL}")
-                    }
-                }
-            }
+   stage('Checkout') {
+    steps {
+        script {
+            // First test authentication
+            sh '''
+                echo "--- Testing GitHub Access ---"
+                curl -u $GITHUB_CREDENTIALS_USR:$GITHUB_CREDENTIALS_PSW \
+                    https://api.github.com/user
+                
+                echo "--- Git Configuration ---"
+                git config --global --list
+            '''
+            
+            // Then checkout
+            checkout([
+                $class: 'GitSCM',
+                branches: [[name: '*/main']],
+                extensions: [[
+                    $class: 'CleanBeforeCheckout'
+                ]],
+                userRemoteConfigs: [[
+                    url: env.REPO_URL,
+                    credentialsId: env.CREDENTIALS_ID
+                ]]
+            ])
         }
+    }
 
         // STAGE 2: INSTALL WITH SECURITY
         stage('Install') {
